@@ -11,42 +11,76 @@ async function runScraper() {
 
   const page = await context.newPage();
   
-  // Example Target URL (Replace with your specific target category or product link)
-  const targetUrl = 'https://m.1688.com'; 
+  // Directly targeting a popular wholesale category feed ensures predictable grid structures
+  const targetUrl = 'https://m.1688.com/page/index.html'; 
   
   try {
     console.log(`📡 Fetching market data from: ${targetUrl}`);
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // Extract structure from the target marketplace
+    // Force extra wait time for lazy components to mount fully
+    await page.waitForTimeout(5000);
+
+    // Mimic real scrolling to push lazy items down and pull up DOM nodes
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        const distance = 200;
+        const timer = setInterval(() => {
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+          if (totalHeight >= 1600) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, 200);
+      });
+    });
+
+    // Precise extraction logic targeting common mobile web elements
     const products = await page.evaluate(() => {
       const items = [];
-      // Generic selectors that target product grids/cards
-      const cards = document.querySelectorAll('[class*="card"], [class*="item"], a[href*="detail"]');
       
-      cards.forEach((card, index) => {
-        if (index > 10) return; // Limit to top 10 items for initial test
-        
-        const titleEl = card.querySelector('[class*="title"], [class*="name"]');
-        const priceEl = card.querySelector('[class*="price"], [class*="amount"]');
-        const imgEl = card.querySelector('img');
+      // Target standard continuous feed item containers or lists
+      const elements = document.querySelectorAll('div[class*="item"], div[class*="card"], a[data-click-log]');
+      
+      elements.forEach((el, index) => {
+        if (items.length >= 12) return; // Cap at top 12 items for clean catalog display
 
-        if (titleEl && priceEl) {
-          items.push({
-            id: `scraped-${Date.now()}-${index}`,
-            title: titleEl.innerText.trim(),
-            priceRaw: priceEl.innerText.trim(),
-            thumbnail: imgEl ? imgEl.src : '',
-            scrapedAt: new Date().toISOString()
-          });
+        // Traverse structural elements searching for valid pricing characters
+        const txt = el.innerText || "";
+        const priceMatch = txt.match(/(?:¥|元|Price)?\s*([0-9]+\.[0-9]+|[0-9]+)/);
+        
+        if (priceMatch) {
+          const imgEl = el.querySelector('img');
+          // Skip tracking icons or transparent layouts
+          if (imgEl && imgEl.src && !imgEl.src.includes('blank.gif')) {
+            
+            // Clean out line-breaks from dynamic text dumps
+            let extractedTitle = txt.split('\n')[0].trim();
+            if (extractedTitle.length < 5 || extractedTitle.match(/^[0-9¥.\s]+$/)) {
+              extractedTitle = "Wholesale Factory Item";
+            }
+
+            items.push({
+              id: `scraped-${Date.now()}-${index}`,
+              title: extractedTitle.substring(0, 60),
+              priceRaw: `¥${priceMatch[1]}`,
+              thumbnail: imgEl.src,
+              scrapedAt: new Date().toISOString()
+            });
+          }
         }
       });
+      
       return items;
     });
 
-    // Save the scraped array data to a local file
-    fs.writeFileSync('products.json', JSON.stringify(products, null, 2));
-    console.log(`✅ Scraped ${products.length} products successfully and saved to products.json`);
+    // Deduplicate entries based on thumbnail links
+    const uniqueProducts = Array.from(new Map(products.map(item => [item.thumbnail, item])).values());
+
+    fs.writeFileSync('products.json', JSON.stringify(uniqueProducts, null, 2));
+    console.log(`✅ Scraped ${uniqueProducts.length} products successfully and saved to products.json`);
 
   } catch (error) {
     console.error("❌ Scraping process encountered an error:", error.message);
